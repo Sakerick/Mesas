@@ -269,7 +269,7 @@
               dominant-baseline="middle"
               class="table-count"
             >
-              {{ getTableGuestCount(table) }}/{{ getCapacity(table.type) }}
+              {{ getTableGuestCount(table) }}/{{ getTableCapacity(table) }}
             </text>
           </g>
         </svg>
@@ -280,13 +280,61 @@
         <div v-if="selectedTable" class="table-details">
           <div class="table-header">
             <div>
-              <span class="badge">{{ formatType(selectedTable.type) }}</span>
+              <span class="badge">{{
+                formatType(selectedTable.type, selectedCapacity)
+              }}</span>
               <h2>Mesa #{{ selectedTable.id }}</h2>
             </div>
             <div class="capacity-box" :class="{ full: isSelectedFull }">
               {{ getTableGuestCount(selectedTable) }} / {{ selectedCapacity }}
             </div>
           </div>
+
+          <form class="capacity-editor" @submit.prevent="saveCapacity">
+            <label class="field-label" for="table-capacity">
+              <span class="field-kicker">Configuración</span>
+              <span>Capacidad de la mesa</span>
+            </label>
+            <div class="capacity-editor-controls">
+              <div class="capacity-stepper">
+                <input
+                  id="table-capacity"
+                  v-model.number="editedCapacity"
+                  type="number"
+                  max="100"
+                  :min="getTableGuestCount(selectedTable)"
+                  aria-describedby="capacity-error"
+                  @input="capacityError = ''"
+                />
+                <div class="capacity-stepper-actions">
+                  <button
+                    type="button"
+                    class="capacity-stepper-button"
+                    aria-label="Aumentar capacidad"
+                    :disabled="editedCapacity >= MAX_TABLE_CAPACITY"
+                    @click="adjustCapacity(1)"
+                  >
+                    <span aria-hidden="true">⌃</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="capacity-stepper-button"
+                    aria-label="Disminuir capacidad"
+                    :disabled="
+                      editedCapacity <= getTableGuestCount(selectedTable)
+                    "
+                    @click="adjustCapacity(-1)"
+                  >
+                    <span aria-hidden="true">⌄</span>
+                  </button>
+                </div>
+              </div>
+              <button type="submit" class="btn-secondary">Guardar</button>
+            </div>
+            <p v-if="capacityError" id="capacity-error" class="capacity-error">
+              {{ capacityError }}
+            </p>
+          </form>
 
           <!-- Agregar graduados a la mesa -->
           <div class="graduate-field">
@@ -304,13 +352,38 @@
           </div>
 
           <form @submit.prevent="addGraduate" class="add-guest-form">
-            <input
-              v-model.number="newGraduateGuestCount"
-              type="number"
-              min="0"
-              :max="availableGuestCapacity"
-              placeholder="Invitados (sin contar graduado)"
-            />
+            <div class="guest-count-stepper">
+              <input
+                v-model.number="newGraduateGuestCount"
+                type="number"
+                min="0"
+                :max="availableGuestCapacity"
+                placeholder="Invitados (sin contar graduado)"
+                aria-label="Cantidad de invitados"
+              />
+              <div class="capacity-stepper-actions">
+                <button
+                  type="button"
+                  class="capacity-stepper-button"
+                  aria-label="Aumentar invitados"
+                  :disabled="
+                    newGraduateGuestCount >= availableGuestCapacity
+                  "
+                  @click="adjustGuestCount(1)"
+                >
+                  <span aria-hidden="true">⌃</span>
+                </button>
+                <button
+                  type="button"
+                  class="capacity-stepper-button"
+                  aria-label="Disminuir invitados"
+                  :disabled="newGraduateGuestCount <= 0"
+                  @click="adjustGuestCount(-1)"
+                >
+                  <span aria-hidden="true">⌄</span>
+                </button>
+              </div>
+            </div>
             <button
               type="submit"
               :disabled="
@@ -393,7 +466,7 @@
             <span class="eyebrow">Distribución de asientos</span>
             <h2>Mesa #{{ selectedTable.id }}</h2>
             <p>
-              {{ formatType(selectedTable.type) }} ·
+              {{ formatType(selectedTable.type, selectedCapacity) }} ·
               {{ getTableGuestCount(selectedTable) }} de
               {{ selectedCapacity }} ocupados
             </p>
@@ -441,11 +514,15 @@ import { ref, computed, watch, onMounted } from "vue";
 import { INITIAL_TABLES, TABLE_CAPACITIES } from "../data/tablesLayout";
 
 const STORAGE_KEY = "evento_mesas_invitados_v1";
+const MIN_TABLE_CAPACITY = 1;
+const MAX_TABLE_CAPACITY = 100;
 
 const tables = ref([]);
 const selectedTableId = ref(null);
 const newGraduateName = ref("");
 const newGraduateGuestCount = ref(0);
+const editedCapacity = ref(0);
+const capacityError = ref("");
 const showTableModal = ref(false);
 const csvFileInput = ref(null);
 
@@ -456,6 +533,7 @@ onMounted(() => {
     try {
       tables.value = JSON.parse(saved).map((table) => ({
         ...table,
+        capacity: normalizeCapacity(table.capacity, table.type),
         graduates: Array.isArray(table.graduates)
           ? table.graduates
           : table.graduateName ||
@@ -486,6 +564,7 @@ onMounted(() => {
   }
   tables.value = INITIAL_TABLES.map((t) => ({
     ...t,
+    capacity: getCapacity(t.type),
     graduates: [],
     guests: [],
   }));
@@ -502,12 +581,25 @@ watch(
 
 const getCapacity = (type) => TABLE_CAPACITIES[type] || 10;
 
+function normalizeCapacity(capacity, type) {
+  const parsedCapacity = Number(capacity);
+  return Number.isInteger(parsedCapacity) &&
+    parsedCapacity >= MIN_TABLE_CAPACITY &&
+    parsedCapacity <= MAX_TABLE_CAPACITY
+    ? parsedCapacity
+    : getCapacity(type);
+}
+
+function getTableCapacity(table) {
+  return normalizeCapacity(table.capacity, table.type);
+}
+
 const selectedTable = computed(() =>
   tables.value.find((t) => t.id === selectedTableId.value),
 );
 
 const selectedCapacity = computed(() =>
-  selectedTable.value ? getCapacity(selectedTable.value.type) : 0,
+  selectedTable.value ? getTableCapacity(selectedTable.value) : 0,
 );
 
 const isSelectedFull = computed(() =>
@@ -517,7 +609,7 @@ const isSelectedFull = computed(() =>
 );
 
 const totalCapacity = computed(() =>
-  tables.value.reduce((acc, t) => acc + getCapacity(t.type), 0),
+  tables.value.reduce((acc, t) => acc + getTableCapacity(t), 0),
 );
 
 const totalGuests = computed(() =>
@@ -550,6 +642,53 @@ function selectTable(id) {
   showTableModal.value = isSameTable;
   newGraduateName.value = "";
   newGraduateGuestCount.value = 0;
+  editedCapacity.value = getTableCapacity(
+    tables.value.find((table) => table.id === id),
+  );
+  capacityError.value = "";
+}
+
+function saveCapacity() {
+  if (!selectedTable.value) return;
+
+  const capacity = Number(editedCapacity.value);
+  const occupied = getTableGuestCount(selectedTable.value);
+  if (
+    !Number.isInteger(capacity) ||
+    capacity < MIN_TABLE_CAPACITY ||
+    capacity > MAX_TABLE_CAPACITY
+  ) {
+    capacityError.value = `La capacidad debe ser un número entero entre ${MIN_TABLE_CAPACITY} y ${MAX_TABLE_CAPACITY}.`;
+    return;
+  }
+  if (capacity < occupied) {
+    capacityError.value = `La capacidad no puede ser menor a los ${occupied} lugares ocupados.`;
+    return;
+  }
+
+  selectedTable.value.capacity = capacity;
+  editedCapacity.value = capacity;
+  capacityError.value = "";
+}
+
+function adjustCapacity(amount) {
+  if (!selectedTable.value) return;
+
+  const minimum = getTableGuestCount(selectedTable.value);
+  const current = Number(editedCapacity.value) || minimum;
+  editedCapacity.value = Math.min(
+    MAX_TABLE_CAPACITY,
+    Math.max(minimum, current + amount),
+  );
+  capacityError.value = "";
+}
+
+function adjustGuestCount(amount) {
+  const current = Number(newGraduateGuestCount.value) || 0;
+  newGraduateGuestCount.value = Math.min(
+    availableGuestCapacity.value,
+    Math.max(0, current + amount),
+  );
 }
 
 function addGraduate() {
@@ -639,9 +778,9 @@ async function importCSV(event) {
         (sum, graduate) => sum + graduate.guestCount + 1,
         0,
       );
-      if (total > getCapacity(table.type)) {
+      if (total > getTableCapacity(table)) {
         throw new Error(
-          `La mesa ${tableId} supera su capacidad de ${getCapacity(table.type)} lugares.`,
+          `La mesa ${tableId} supera su capacidad de ${getTableCapacity(table)} lugares.`,
         );
       }
     }
@@ -707,15 +846,15 @@ function parseCSV(text) {
   return rows;
 }
 
-function formatType(type) {
+function formatType(type, capacity = getCapacity(type)) {
   const labels = {
-    redonda: "Redonda (10 pers.)",
-    cuadrada: "Cuadrada (12 pers.)",
-    rectangular: "Rectangular (14 pers.)",
-    circular_grande: "Circular Grande (22 pers.)",
-    serpiente: "Serpiente (24 pers.)",
+    redonda: "Redonda",
+    cuadrada: "Cuadrada",
+    rectangular: "Rectangular",
+    circular_grande: "Circular Grande",
+    serpiente: "Serpiente",
   };
-  return labels[type] || type;
+  return `${labels[type] || type} (${capacity} pers.)`;
 }
 
 function seatPosition(seat, capacity) {
@@ -744,7 +883,7 @@ function getSnakePath(cx, cy, h) {
 
 function getTableFill(table) {
   const count = getTableGuestCount(table);
-  const cap = getCapacity(table.type);
+  const cap = getTableCapacity(table);
   if (count === 0) return "#ffffff";
   if (count >= cap) return "#fee2e2"; // Rojo claro (llena)
   return "#dcfce7"; // Verde claro (con disponibilidad)
@@ -753,7 +892,7 @@ function getTableFill(table) {
 function getTableStroke(table) {
   if (selectedTableId.value === table.id) return "#2563eb";
   const count = getTableGuestCount(table);
-  const cap = getCapacity(table.type);
+  const cap = getTableCapacity(table);
   if (count >= cap) return "#dc2626";
   if (count > 0) return "#16a34a";
   return "#334155";
@@ -794,6 +933,7 @@ function resetData() {
   if (confirm("¿Seguro que deseas borrar todos los invitados asignados?")) {
     tables.value = INITIAL_TABLES.map((t) => ({
       ...t,
+      capacity: getCapacity(t.type),
       graduates: [],
       guests: [],
     }));
@@ -1034,6 +1174,105 @@ function resetData() {
 .capacity-box.full {
   background: #fee2e2;
   color: #991b1b;
+}
+
+.capacity-editor {
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+}
+
+.capacity-editor-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.capacity-stepper,
+.guest-count-stepper {
+  display: flex;
+  min-width: 0;
+  position: relative;
+  width: 100%;
+}
+
+.capacity-stepper input,
+.guest-count-stepper input {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: var(--ink);
+  min-width: 0;
+  padding: 0.55rem 2.2rem 0.55rem 0.75rem;
+  width: 100%;
+}
+
+.capacity-stepper input::-webkit-inner-spin-button,
+.capacity-stepper input::-webkit-outer-spin-button,
+.guest-count-stepper input::-webkit-inner-spin-button,
+.guest-count-stepper input::-webkit-outer-spin-button {
+  margin: 0;
+  opacity: 0;
+}
+
+.capacity-stepper-actions {
+  border-left: 1px solid #cbd5e1;
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 2px);
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  width: 1.8rem;
+}
+
+.capacity-stepper-button {
+  align-items: center;
+  background: #f2f7f3;
+  border: 0;
+  color: var(--teal);
+  cursor: pointer;
+  display: flex;
+  flex: 1;
+  font-size: 0.9rem;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+}
+
+.capacity-stepper-button:first-child {
+  border-bottom: 1px solid #cbd5e1;
+  border-radius: 0 5px 0 0;
+}
+
+.capacity-stepper-button:last-child {
+  border-radius: 0 0 5px 0;
+}
+
+.capacity-stepper-button:hover:not(:disabled) {
+  background: #d8eee4;
+}
+
+.capacity-stepper-button:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+  position: relative;
+  z-index: 1;
+}
+
+.capacity-stepper-button:disabled {
+  color: #a7b7b6;
+  cursor: not-allowed;
+}
+
+.capacity-editor-controls .btn-secondary {
+  flex: 0 0 auto;
+}
+
+.capacity-error {
+  color: #b55748;
+  font-size: 0.78rem;
+  margin-top: 0.45rem;
 }
 
 .add-guest-form {
