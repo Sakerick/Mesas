@@ -387,14 +387,18 @@
             <button
               type="submit"
               :disabled="
-                isSelectedFull ||
+                (isSelectedFull && !hasGraduate(newGraduateName)) ||
                 !newGraduateName ||
                 newGraduateGuestCount < 0 ||
                 newGraduateGuestCount > availableGuestCapacity
               "
               class="btn-primary"
             >
-              {{ isSelectedFull ? "Mesa Llena" : "+ Agregar graduado" }}
+              {{
+                isSelectedFull && !hasGraduate(newGraduateName)
+                  ? "Mesa Llena"
+                  : "+ Agregar graduado"
+              }}
             </button>
           </form>
 
@@ -404,18 +408,70 @@
               :key="graduate.id"
               class="graduate-row"
             >
-              <div>
-                <strong>{{ graduate.name || "Sin nombre" }}</strong>
-                <span>{{ graduate.guestCount }} invitados + 1 graduado</span>
+              <div v-if="editingGraduateId === graduate.id" class="graduate-edit-fields">
+                <input
+                  v-model.trim="editingGraduateName"
+                  class="graduate-input"
+                  type="text"
+                  aria-label="Nombre del graduado"
+                />
+                <input
+                  v-model.number="editingGraduateGuestCount"
+                  class="guest-count-input"
+                  type="number"
+                  min="0"
+                  max="100"
+                  aria-label="Cantidad de invitados"
+                />
+                <small v-if="graduateEditError" class="capacity-error">
+                  {{ graduateEditError }}
+                </small>
               </div>
-              <button
-                type="button"
-                class="btn-remove"
-                title="Quitar graduado de la mesa"
-                @click="removeGraduate(graduate.id)"
-              >
-                &times;
-              </button>
+              <div v-else>
+                <strong>{{ graduate.name || "Sin nombre" }}</strong>
+                <span>
+                  {{ graduate.guestCount }} invitados +
+                  {{ isGraduateCounted(selectedTable, graduate) ? 1 : 0 }}
+                  graduado
+                </span>
+              </div>
+              <div class="graduate-actions">
+                <template v-if="editingGraduateId === graduate.id">
+                  <button
+                    type="button"
+                    class="btn-secondary btn-small"
+                    @click="saveGraduateEdit"
+                  >
+                    Guardar
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-remove"
+                    title="Cancelar edición"
+                    @click="cancelGraduateEdit"
+                  >
+                    &times;
+                  </button>
+                </template>
+                <template v-else>
+                  <button
+                    type="button"
+                    class="btn-edit"
+                    title="Editar graduado e invitados"
+                    @click="startGraduateEdit(graduate)"
+                  >
+                    Editar
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-remove"
+                    title="Quitar graduado de la mesa"
+                    @click="removeGraduate(graduate.id)"
+                  >
+                    &times;
+                  </button>
+                </template>
+              </div>
             </div>
           </div>
 
@@ -525,6 +581,10 @@ const editedCapacity = ref(0);
 const capacityError = ref("");
 const showTableModal = ref(false);
 const csvFileInput = ref(null);
+const editingGraduateId = ref(null);
+const editingGraduateName = ref("");
+const editingGraduateGuestCount = ref(0);
+const graduateEditError = ref("");
 
 // Inicializar datos desde localStorage o plantilla base
 onMounted(() => {
@@ -626,12 +686,53 @@ const availableCapacity = computed(() =>
 );
 
 const availableGuestCapacity = computed(() =>
-  Math.max(0, availableCapacity.value - 1),
+  Math.max(
+    0,
+    availableCapacity.value -
+      (hasGraduate(newGraduateName.value) ? 0 : 1),
+  ),
 );
 
-function getTableGuestCount(table) {
+function getGraduateKey(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function hasGraduate(name, tableList = tables.value) {
+  const graduateKey = getGraduateKey(name);
+  return graduateKey
+    ? tableList.some((table) =>
+        (table.graduates || []).some(
+          (graduate) => getGraduateKey(graduate.name) === graduateKey,
+        ),
+      )
+    : false;
+}
+
+function isGraduateCounted(table, graduate, tableList = tables.value) {
+  const tableIndex = tableList.findIndex((item) => item.id === table.id);
+  if (tableIndex < 0) return true;
+
+  const graduateKey = getGraduateKey(graduate.name);
+  for (let index = 0; index <= tableIndex; index += 1) {
+    const graduates = tableList[index].graduates || [];
+    for (const candidate of graduates) {
+      if (candidate === graduate) return true;
+      if (getGraduateKey(candidate.name) === graduateKey) return false;
+    }
+  }
+  return true;
+}
+
+function getTableGuestCount(table, tableList = tables.value) {
   return (table.graduates || []).reduce(
-    (total, graduate) => total + (Number(graduate.guestCount) || 0) + 1,
+    (total, graduate) =>
+      total +
+      (Number(graduate.guestCount) || 0) +
+      (isGraduateCounted(table, graduate, tableList) ? 1 : 0),
     0,
   );
 }
@@ -712,8 +813,58 @@ function addGraduate() {
   newGraduateGuestCount.value = 0;
 }
 
+function startGraduateEdit(graduate) {
+  editingGraduateId.value = graduate.id;
+  editingGraduateName.value = graduate.name || "";
+  editingGraduateGuestCount.value = Number(graduate.guestCount) || 0;
+  graduateEditError.value = "";
+}
+
+function cancelGraduateEdit() {
+  editingGraduateId.value = null;
+  editingGraduateName.value = "";
+  editingGraduateGuestCount.value = 0;
+  graduateEditError.value = "";
+}
+
+function saveGraduateEdit() {
+  if (!selectedTable.value) return;
+
+  const name = editingGraduateName.value.trim();
+  const guestCount = Number(editingGraduateGuestCount.value);
+  if (!name) {
+    graduateEditError.value = "Escribe el nombre del graduado.";
+    return;
+  }
+  if (!Number.isInteger(guestCount) || guestCount < 0) {
+    graduateEditError.value = "Los invitados deben ser un número entero válido.";
+    return;
+  }
+
+  const graduates = selectedTable.value.graduates.map((graduate) =>
+    graduate.id === editingGraduateId.value
+      ? { ...graduate, name, guestCount }
+      : graduate,
+  );
+  const candidateTables = tables.value.map((table) =>
+    table.id === selectedTable.value.id ? { ...table, graduates } : table,
+  );
+  const candidateTable = candidateTables.find(
+    (table) => table.id === selectedTable.value.id,
+  );
+
+  if (getTableGuestCount(candidateTable, candidateTables) > getTableCapacity(candidateTable)) {
+    graduateEditError.value = `La mesa supera su capacidad de ${getTableCapacity(candidateTable)} lugares.`;
+    return;
+  }
+
+  selectedTable.value.graduates = graduates;
+  cancelGraduateEdit();
+}
+
 function removeGraduate(graduateId) {
   if (!selectedTable.value) return;
+  if (editingGraduateId.value === graduateId) cancelGraduateEdit();
   selectedTable.value.graduates = selectedTable.value.graduates.filter(
     (graduate) => graduate.id !== graduateId,
   );
@@ -772,12 +923,14 @@ async function importCSV(event) {
       });
     }
 
-    for (const [tableId, graduates] of importedGraduates) {
-      const table = tables.value.find((item) => item.id === tableId);
-      const total = graduates.reduce(
-        (sum, graduate) => sum + graduate.guestCount + 1,
-        0,
-      );
+    const importedTables = tables.value.map((table) => ({
+      ...table,
+      graduates: importedGraduates.get(table.id) || [],
+    }));
+
+    for (const [tableId] of importedGraduates) {
+      const table = importedTables.find((item) => item.id === tableId);
+      const total = getTableGuestCount(table, importedTables);
       if (total > getTableCapacity(table)) {
         throw new Error(
           `La mesa ${tableId} supera su capacidad de ${getTableCapacity(table)} lugares.`,
@@ -1559,6 +1712,42 @@ function resetData() {
   flex-direction: column;
   gap: 0.1rem;
   min-width: 0;
+}
+.graduate-edit-fields {
+  flex: 1 1 auto;
+  gap: 0.35rem !important;
+  min-width: 0;
+}
+.graduate-edit-fields .graduate-input {
+  padding: 0.45rem 0.55rem;
+}
+.guest-count-input {
+  background: #fffdf8;
+  border: 1px solid #b9d1c9;
+  border-radius: 6px;
+  box-sizing: border-box;
+  padding: 0.45rem 0.55rem;
+  width: 7rem;
+}
+.graduate-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.35rem;
+  margin-left: 0.6rem;
+}
+.btn-small {
+  font-size: 0.72rem;
+  padding: 0.4rem 0.55rem;
+}
+.btn-edit {
+  background: transparent;
+  border: 0;
+  color: var(--teal);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.35rem;
 }
 .graduate-row strong {
   color: var(--ink);
