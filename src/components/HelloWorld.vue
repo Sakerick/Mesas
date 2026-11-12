@@ -349,6 +349,15 @@
               placeholder="Escribe el nombre completo"
               class="graduate-input"
             />
+            <select
+              v-model="newGraduateCareer"
+              class="graduate-input"
+              aria-label="Carrera del graduado"
+            >
+              <option v-for="career in CAREERS" :key="career" :value="career">
+                {{ career }}
+              </option>
+            </select>
           </div>
 
           <form @submit.prevent="addGraduate" class="add-guest-form">
@@ -415,6 +424,15 @@
                   type="text"
                   aria-label="Nombre del graduado"
                 />
+                <select
+                  v-model="editingGraduateCareer"
+                  class="graduate-input"
+                  aria-label="Carrera del graduado"
+                >
+                  <option v-for="career in CAREERS" :key="career" :value="career">
+                    {{ career }}
+                  </option>
+                </select>
                 <input
                   v-model.number="editingGraduateGuestCount"
                   class="guest-count-input"
@@ -429,6 +447,7 @@
               </div>
               <div v-else>
                 <strong>{{ graduate.name || "Sin nombre" }}</strong>
+                <span>{{ graduate.career || "Computación" }}</span>
                 <span>
                   {{ graduate.guestCount }} invitados +
                   {{ isGraduateCounted(selectedTable, graduate) ? 1 : 0 }}
@@ -572,10 +591,12 @@ import { INITIAL_TABLES, TABLE_CAPACITIES } from "../data/tablesLayout";
 const STORAGE_KEY = "evento_mesas_invitados_v1";
 const MIN_TABLE_CAPACITY = 1;
 const MAX_TABLE_CAPACITY = 100;
+const CAREERS = ["Computación", "Mecatrónica"];
 
 const tables = ref([]);
 const selectedTableId = ref(null);
 const newGraduateName = ref("");
+const newGraduateCareer = ref(CAREERS[0]);
 const newGraduateGuestCount = ref(0);
 const editedCapacity = ref(0);
 const capacityError = ref("");
@@ -583,8 +604,13 @@ const showTableModal = ref(false);
 const csvFileInput = ref(null);
 const editingGraduateId = ref(null);
 const editingGraduateName = ref("");
+const editingGraduateCareer = ref(CAREERS[0]);
 const editingGraduateGuestCount = ref(0);
 const graduateEditError = ref("");
+
+function normalizeCareer(career) {
+  return CAREERS.includes(career) ? career : CAREERS[0];
+}
 
 // Inicializar datos desde localStorage o plantilla base
 onMounted(() => {
@@ -595,7 +621,10 @@ onMounted(() => {
         ...table,
         capacity: normalizeCapacity(table.capacity, table.type),
         graduates: Array.isArray(table.graduates)
-          ? table.graduates
+          ? table.graduates.map((graduate) => ({
+              ...graduate,
+              career: normalizeCareer(graduate.career),
+            }))
           : table.graduateName ||
               table.guestCount ||
               (table.guests || []).length
@@ -605,6 +634,7 @@ onMounted(() => {
                     ? crypto.randomUUID()
                     : `${table.id}-legacy`,
                   name: table.graduateName || "",
+                  career: CAREERS[0],
                   guestCount: Math.min(
                     getCapacity(table.type),
                     Math.max(
@@ -742,6 +772,7 @@ function selectTable(id) {
   selectedTableId.value = id;
   showTableModal.value = isSameTable;
   newGraduateName.value = "";
+  newGraduateCareer.value = CAREERS[0];
   newGraduateGuestCount.value = 0;
   editedCapacity.value = getTableCapacity(
     tables.value.find((table) => table.id === id),
@@ -807,15 +838,18 @@ function addGraduate() {
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random()}`,
     name: newGraduateName.value,
+    career: newGraduateCareer.value,
     guestCount: count,
   });
   newGraduateName.value = "";
+  newGraduateCareer.value = CAREERS[0];
   newGraduateGuestCount.value = 0;
 }
 
 function startGraduateEdit(graduate) {
   editingGraduateId.value = graduate.id;
   editingGraduateName.value = graduate.name || "";
+  editingGraduateCareer.value = normalizeCareer(graduate.career);
   editingGraduateGuestCount.value = Number(graduate.guestCount) || 0;
   graduateEditError.value = "";
 }
@@ -823,6 +857,7 @@ function startGraduateEdit(graduate) {
 function cancelGraduateEdit() {
   editingGraduateId.value = null;
   editingGraduateName.value = "";
+  editingGraduateCareer.value = CAREERS[0];
   editingGraduateGuestCount.value = 0;
   graduateEditError.value = "";
 }
@@ -843,7 +878,7 @@ function saveGraduateEdit() {
 
   const graduates = selectedTable.value.graduates.map((graduate) =>
     graduate.id === editingGraduateId.value
-      ? { ...graduate, name, guestCount }
+      ? { ...graduate, name, career: editingGraduateCareer.value, guestCount }
       : graduate,
   );
   const candidateTables = tables.value.map((table) =>
@@ -882,11 +917,10 @@ async function importCSV(event) {
   try {
     const rows = parseCSV(await file.text());
     const headers = rows.shift()?.map((header) => normalizeCSVValue(header));
-    const expectedHeaders = [
-      "nombre del graduado",
-      "total invitados",
-      "numero de mesa",
-    ];
+    const hasCareerColumn = headers?.[1] === "carrera";
+    const expectedHeaders = hasCareerColumn
+      ? ["nombre del graduado", "carrera", "total invitados", "numero de mesa"]
+      : ["nombre del graduado", "total invitados", "numero de mesa"];
 
     if (
       !headers ||
@@ -894,7 +928,7 @@ async function importCSV(event) {
       !expectedHeaders.every((header, index) => headers[index] === header)
     ) {
       throw new Error(
-        "El CSV debe tener las columnas: Nombre del graduado, Total Invitados, Numero de Mesa.",
+        "El CSV debe tener las columnas: Nombre del graduado, Carrera, Total Invitados, Numero de Mesa.",
       );
     }
 
@@ -902,11 +936,18 @@ async function importCSV(event) {
     for (const row of rows) {
       if (row.every((value) => !value.trim())) continue;
       const name = row[0]?.trim() || "Sin nombre";
-      const guestCount = Number(row[1]);
-      const tableId = Number(row[2]);
+      const career =
+        (hasCareerColumn ? row[1]?.trim() : undefined) || CAREERS[0];
+      const guestCount = Number(row[hasCareerColumn ? 2 : 1]);
+      const tableId = Number(row[hasCareerColumn ? 3 : 2]);
       const table = tables.value.find((item) => item.id === tableId);
 
-      if (!table || !Number.isInteger(guestCount) || guestCount < 0) {
+      if (
+        !table ||
+        !Number.isInteger(guestCount) ||
+        guestCount < 0 ||
+        !CAREERS.includes(career)
+      ) {
         throw new Error(
           `Fila inválida para la mesa ${row[2] || "desconocida"}.`,
         );
@@ -919,6 +960,7 @@ async function importCSV(event) {
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random()}`,
         name,
+        career,
         guestCount,
       });
     }
@@ -1052,14 +1094,21 @@ function getTableStroke(table) {
 }
 
 function exportCSV() {
-  const rows = [["Nombre del graduado", "Total Invitados", "Numero de Mesa"]];
+  const rows = [
+    ["Nombre del graduado", "Carrera", "Total Invitados", "Numero de Mesa"],
+  ];
   tables.value.forEach((t) => {
     if (t.graduates.length === 0) {
-      rows.push(["Sin asignar", 0, t.id]);
+      rows.push(["Sin asignar", "", 0, t.id]);
       return;
     }
     t.graduates.forEach((graduate) => {
-      rows.push([graduate.name || "Sin nombre", graduate.guestCount, t.id]);
+      rows.push([
+        graduate.name || "Sin nombre",
+        normalizeCareer(graduate.career),
+        graduate.guestCount,
+        t.id,
+      ]);
     });
   });
 
