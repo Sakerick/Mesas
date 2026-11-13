@@ -17,7 +17,9 @@
 
       <div class="actions">
         <button @click="openImport" class="btn-secondary">Importar CSV</button>
-        <button @click="exportCSV" class="btn-secondary">Exportar CSV</button>
+        <button @click="openExportPreview" class="btn-secondary">
+          Exportar CSV
+        </button>
         <button @click="resetData" class="btn-danger-outline">Reiniciar</button>
         <input
           ref="csvFileInput"
@@ -375,9 +377,7 @@
                   type="button"
                   class="capacity-stepper-button"
                   aria-label="Aumentar invitados"
-                  :disabled="
-                    newGraduateGuestCount >= availableGuestCapacity
-                  "
+                  :disabled="newGraduateGuestCount >= availableGuestCapacity"
                   @click="adjustGuestCount(1)"
                 >
                   <span aria-hidden="true">⌃</span>
@@ -396,7 +396,8 @@
             <button
               type="submit"
               :disabled="
-                (isSelectedFull && !hasGraduate(newGraduateName)) ||
+                hasGraduate(newGraduateName) ||
+                isSelectedFull ||
                 !newGraduateName ||
                 newGraduateGuestCount < 0 ||
                 newGraduateGuestCount > availableGuestCapacity
@@ -404,9 +405,11 @@
               class="btn-primary"
             >
               {{
-                isSelectedFull && !hasGraduate(newGraduateName)
-                  ? "Mesa Llena"
-                  : "+ Agregar graduado"
+                hasGraduate(newGraduateName)
+                  ? "Graduado ya agregado"
+                  : isSelectedFull && !hasGraduate(newGraduateName)
+                    ? "Mesa Llena"
+                    : "+ Agregar graduado"
               }}
             </button>
           </form>
@@ -417,7 +420,10 @@
               :key="graduate.id"
               class="graduate-row"
             >
-              <div v-if="editingGraduateId === graduate.id" class="graduate-edit-fields">
+              <div
+                v-if="editingGraduateId === graduate.id"
+                class="graduate-edit-fields"
+              >
                 <input
                   v-model.trim="editingGraduateName"
                   class="graduate-input"
@@ -429,7 +435,11 @@
                   class="graduate-input"
                   aria-label="Carrera del graduado"
                 >
-                  <option v-for="career in CAREERS" :key="career" :value="career">
+                  <option
+                    v-for="career in CAREERS"
+                    :key="career"
+                    :value="career"
+                  >
                     {{ career }}
                   </option>
                 </select>
@@ -448,10 +458,16 @@
               <div v-else>
                 <strong>{{ graduate.name || "Sin nombre" }}</strong>
                 <span>{{ graduate.career || "Computación" }}</span>
+                <label class="graduate-inclusion">
+                  <input
+                    v-model="graduate.includeGraduate"
+                    type="checkbox"
+                    :aria-label="`Incluir a ${graduate.name || 'este graduado'} en la mesa`"
+                  />
+                  <span>Incluir graduado en esta mesa</span>
+                </label>
                 <span>
-                  {{ graduate.guestCount }} invitados +
-                  {{ isGraduateCounted(selectedTable, graduate) ? 1 : 0 }}
-                  graduado
+                  {{ getGraduatePeopleCount(graduate) }} personas en esta mesa
                 </span>
               </div>
               <div class="graduate-actions">
@@ -515,6 +531,70 @@
           </p>
         </div>
       </aside>
+    </div>
+
+    <div
+      v-if="showExportPreview"
+      class="modal-backdrop"
+      @click.self="showExportPreview = false"
+    >
+      <section
+        class="csv-preview-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="csv-preview-title"
+      >
+        <button
+          class="modal-close"
+          type="button"
+          aria-label="Cerrar vista previa del CSV"
+          @click="showExportPreview = false"
+        >
+          &times;
+        </button>
+        <div class="modal-heading">
+          <div>
+            <span class="eyebrow">Antes de exportar</span>
+            <h2 id="csv-preview-title">Vista previa del CSV</h2>
+            <p>{{ csvPreviewRows.length - 1 }} filas listas para descargar.</p>
+          </div>
+        </div>
+
+        <div class="csv-preview-table-wrapper">
+          <table class="csv-preview-table">
+            <thead>
+              <tr>
+                <th v-for="header in csvPreviewRows[0]" :key="header">
+                  {{ header }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(row, rowIndex) in csvPreviewRows.slice(1)"
+                :key="rowIndex"
+              >
+                <td v-for="(value, columnIndex) in row" :key="columnIndex">
+                  {{ value || "—" }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="csv-preview-actions">
+          <button
+            type="button"
+            class="btn-secondary btn-preview-cancel"
+            @click="showExportPreview = false"
+          >
+            Cancelar
+          </button>
+          <button type="button" class="btn-primary" @click="exportCSV">
+            Descargar CSV
+          </button>
+        </div>
+      </section>
     </div>
 
     <div
@@ -601,6 +681,7 @@ const newGraduateGuestCount = ref(0);
 const editedCapacity = ref(0);
 const capacityError = ref("");
 const showTableModal = ref(false);
+const showExportPreview = ref(false);
 const csvFileInput = ref(null);
 const editingGraduateId = ref(null);
 const editingGraduateName = ref("");
@@ -624,6 +705,7 @@ onMounted(() => {
           ? table.graduates.map((graduate) => ({
               ...graduate,
               career: normalizeCareer(graduate.career),
+              includeGraduate: graduate.includeGraduate !== false,
             }))
           : table.graduateName ||
               table.guestCount ||
@@ -642,6 +724,7 @@ onMounted(() => {
                       Number(table.guestCount) || (table.guests || []).length,
                     ),
                   ),
+                  includeGraduate: true,
                 },
               ]
             : [],
@@ -718,10 +801,11 @@ const availableCapacity = computed(() =>
 const availableGuestCapacity = computed(() =>
   Math.max(
     0,
-    availableCapacity.value -
-      (hasGraduate(newGraduateName.value) ? 0 : 1),
+    availableCapacity.value - (hasGraduate(newGraduateName.value) ? 0 : 1),
   ),
 );
+
+const csvPreviewRows = computed(() => buildCSVRows());
 
 function getGraduateKey(name) {
   return String(name || "")
@@ -731,38 +815,25 @@ function getGraduateKey(name) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-function hasGraduate(name, tableList = tables.value) {
+function hasGraduate(name, graduates = selectedTable.value?.graduates || []) {
   const graduateKey = getGraduateKey(name);
   return graduateKey
-    ? tableList.some((table) =>
-        (table.graduates || []).some(
-          (graduate) => getGraduateKey(graduate.name) === graduateKey,
-        ),
+    ? graduates.some(
+        (graduate) => getGraduateKey(graduate.name) === graduateKey,
       )
     : false;
 }
 
-function isGraduateCounted(table, graduate, tableList = tables.value) {
-  const tableIndex = tableList.findIndex((item) => item.id === table.id);
-  if (tableIndex < 0) return true;
-
-  const graduateKey = getGraduateKey(graduate.name);
-  for (let index = 0; index <= tableIndex; index += 1) {
-    const graduates = tableList[index].graduates || [];
-    for (const candidate of graduates) {
-      if (candidate === graduate) return true;
-      if (getGraduateKey(candidate.name) === graduateKey) return false;
-    }
-  }
-  return true;
+function getGraduatePeopleCount(graduate) {
+  return (
+    (Number(graduate.guestCount) || 0) +
+    (graduate.includeGraduate !== false ? 1 : 0)
+  );
 }
 
-function getTableGuestCount(table, tableList = tables.value) {
+function getTableGuestCount(table) {
   return (table.graduates || []).reduce(
-    (total, graduate) =>
-      total +
-      (Number(graduate.guestCount) || 0) +
-      (isGraduateCounted(table, graduate, tableList) ? 1 : 0),
+    (total, graduate) => total + getGraduatePeopleCount(graduate),
     0,
   );
 }
@@ -825,6 +896,7 @@ function adjustGuestCount(amount) {
 
 function addGraduate() {
   if (!selectedTable.value) return;
+  if (hasGraduate(newGraduateName.value)) return;
   const count = Number(newGraduateGuestCount.value) || 0;
   if (
     !newGraduateName.value ||
@@ -840,6 +912,7 @@ function addGraduate() {
     name: newGraduateName.value,
     career: newGraduateCareer.value,
     guestCount: count,
+    includeGraduate: true,
   });
   newGraduateName.value = "";
   newGraduateCareer.value = CAREERS[0];
@@ -872,7 +945,8 @@ function saveGraduateEdit() {
     return;
   }
   if (!Number.isInteger(guestCount) || guestCount < 0) {
-    graduateEditError.value = "Los invitados deben ser un número entero válido.";
+    graduateEditError.value =
+      "Los invitados deben ser un número entero válido.";
     return;
   }
 
@@ -888,7 +962,10 @@ function saveGraduateEdit() {
     (table) => table.id === selectedTable.value.id,
   );
 
-  if (getTableGuestCount(candidateTable, candidateTables) > getTableCapacity(candidateTable)) {
+  if (
+    getTableGuestCount(candidateTable, candidateTables) >
+    getTableCapacity(candidateTable)
+  ) {
     graduateEditError.value = `La mesa supera su capacidad de ${getTableCapacity(candidateTable)} lugares.`;
     return;
   }
@@ -909,6 +986,10 @@ function openImport() {
   csvFileInput.value?.click();
 }
 
+function openExportPreview() {
+  showExportPreview.value = true;
+}
+
 async function importCSV(event) {
   const file = event.target.files?.[0];
   event.target.value = "";
@@ -918,17 +999,36 @@ async function importCSV(event) {
     const rows = parseCSV(await file.text());
     const headers = rows.shift()?.map((header) => normalizeCSVValue(header));
     const hasCareerColumn = headers?.[1] === "carrera";
+    const peopleCountColumnIndex = hasCareerColumn ? 2 : 1;
+    const hasTotalPeopleColumn =
+      headers?.[peopleCountColumnIndex] === "total personas en mesa";
+    const hasLegacyGuestColumn =
+      headers?.[peopleCountColumnIndex] === "total invitados";
     const expectedHeaders = hasCareerColumn
-      ? ["nombre del graduado", "carrera", "total invitados", "numero de mesa"]
-      : ["nombre del graduado", "total invitados", "numero de mesa"];
+      ? [
+          "nombre del graduado",
+          "carrera",
+          hasTotalPeopleColumn
+            ? "total personas en mesa"
+            : "total invitados",
+          "numero de mesa",
+        ]
+      : [
+          "nombre del graduado",
+          hasTotalPeopleColumn ? "total personas en mesa" : "total invitados",
+          "numero de mesa",
+        ];
+    const includeGraduateColumn =
+      headers?.[peopleCountColumnIndex + 2] === "incluye graduado";
 
     if (
       !headers ||
+      (!hasTotalPeopleColumn && !hasLegacyGuestColumn) ||
       headers.length < expectedHeaders.length ||
       !expectedHeaders.every((header, index) => headers[index] === header)
     ) {
       throw new Error(
-        "El CSV debe tener las columnas: Nombre del graduado, Carrera, Total Invitados, Numero de Mesa.",
+        "El CSV debe tener las columnas: Nombre del graduado, Carrera, Total Personas en Mesa, Numero de Mesa.",
       );
     }
 
@@ -938,22 +1038,31 @@ async function importCSV(event) {
       const name = row[0]?.trim() || "Sin nombre";
       const career =
         (hasCareerColumn ? row[1]?.trim() : undefined) || CAREERS[0];
-      const guestCount = Number(row[hasCareerColumn ? 2 : 1]);
-      const tableId = Number(row[hasCareerColumn ? 3 : 2]);
+      const totalPeople = Number(row[peopleCountColumnIndex]);
+      const tableId = Number(row[peopleCountColumnIndex + 1]);
+      const includeGraduate = includeGraduateColumn
+        ? parseCSVBoolean(row[peopleCountColumnIndex + 2])
+        : true;
+      const guestCount = hasTotalPeopleColumn
+        ? totalPeople - (includeGraduate ? 1 : 0)
+        : totalPeople;
       const table = tables.value.find((item) => item.id === tableId);
 
       if (
         !table ||
+        !Number.isInteger(totalPeople) ||
+        totalPeople < 0 ||
         !Number.isInteger(guestCount) ||
         guestCount < 0 ||
-        !CAREERS.includes(career)
+        !CAREERS.includes(career) ||
+        includeGraduate === null
       ) {
         throw new Error(
-          `Fila inválida para la mesa ${row[2] || "desconocida"}.`,
+          `Fila inválida para la mesa ${row[peopleCountColumnIndex + 1] || "desconocida"}.`,
         );
       }
 
-      if (name.toLowerCase() === "sin asignar" && guestCount === 0) continue;
+      if (name.toLowerCase() === "sin asignar" && totalPeople === 0) continue;
       if (!importedGraduates.has(tableId)) importedGraduates.set(tableId, []);
       importedGraduates.get(tableId).push({
         id: crypto.randomUUID
@@ -962,6 +1071,7 @@ async function importCSV(event) {
         name,
         career,
         guestCount,
+        includeGraduate,
       });
     }
 
@@ -972,7 +1082,7 @@ async function importCSV(event) {
 
     for (const [tableId] of importedGraduates) {
       const table = importedTables.find((item) => item.id === tableId);
-      const total = getTableGuestCount(table, importedTables);
+      const total = getTableGuestCount(table);
       if (total > getTableCapacity(table)) {
         throw new Error(
           `La mesa ${tableId} supera su capacidad de ${getTableCapacity(table)} lugares.`,
@@ -1004,6 +1114,13 @@ function normalizeCSVValue(value) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+function parseCSVBoolean(value) {
+  const normalized = normalizeCSVValue(value);
+  if (["si", "sí", "true", "1"].includes(normalized)) return true;
+  if (["no", "false", "0"].includes(normalized)) return false;
+  return null;
 }
 
 function parseCSV(text) {
@@ -1094,24 +1211,8 @@ function getTableStroke(table) {
 }
 
 function exportCSV() {
-  const rows = [
-    ["Nombre del graduado", "Carrera", "Total Invitados", "Numero de Mesa"],
-  ];
-  tables.value.forEach((t) => {
-    if (t.graduates.length === 0) {
-      rows.push(["Sin asignar", "", 0, t.id]);
-      return;
-    }
-    t.graduates.forEach((graduate) => {
-      rows.push([
-        graduate.name || "Sin nombre",
-        normalizeCareer(graduate.career),
-        graduate.guestCount,
-        t.id,
-      ]);
-    });
-  });
-
+  const rows = csvPreviewRows.value;
+  showExportPreview.value = false;
   const csvContent =
     "\ufeff" + rows.map((row) => row.map(csvEscape).join(",")).join("\n");
   const encodedUri = URL.createObjectURL(
@@ -1124,6 +1225,34 @@ function exportCSV() {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(encodedUri);
+}
+
+function buildCSVRows() {
+  const rows = [
+    [
+      "Nombre del graduado",
+      "Carrera",
+      "Total Personas en Mesa",
+      "Numero de Mesa",
+      "Incluye Graduado",
+    ],
+  ];
+  tables.value.forEach((t) => {
+    if (t.graduates.length === 0) {
+      rows.push(["Sin asignar", "", 0, t.id, "No"]);
+      return;
+    }
+    t.graduates.forEach((graduate) => {
+      rows.push([
+        graduate.name || "Sin nombre",
+        normalizeCareer(graduate.career),
+        getGraduatePeopleCount(graduate),
+        t.id,
+        graduate.includeGraduate !== false ? "Sí" : "No",
+      ]);
+    });
+  });
+  return rows;
 }
 
 function csvEscape(value) {
@@ -1775,6 +1904,7 @@ function resetData() {
   border: 1px solid #b9d1c9;
   border-radius: 6px;
   box-sizing: border-box;
+  color: var(--ink);
   padding: 0.45rem 0.55rem;
   width: 7rem;
 }
@@ -1808,6 +1938,20 @@ function resetData() {
 .graduate-row span {
   color: var(--muted);
   font-size: 0.75rem;
+}
+.graduate-inclusion {
+  align-items: center;
+  color: var(--teal);
+  display: flex;
+  font-size: 0.75rem;
+  gap: 0.35rem;
+  margin-top: 0.2rem;
+}
+.graduate-inclusion input {
+  accent-color: var(--teal);
+  height: 1rem;
+  margin: 0;
+  width: 1rem;
 }
 .graduate-row .btn-remove {
   flex: 0 0 auto;
@@ -1986,6 +2130,64 @@ function resetData() {
   border-color: var(--coral);
 }
 
+.csv-preview-modal {
+  background: var(--paper);
+  border: 1px solid #fff;
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(23, 42, 58, 0.25);
+  max-width: 900px;
+  padding: clamp(1.25rem, 4vw, 2rem);
+  position: relative;
+  width: 100%;
+}
+.csv-preview-table-wrapper {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 1.25rem;
+  max-height: min(60vh, 480px);
+  overflow: auto;
+}
+.csv-preview-table {
+  border-collapse: collapse;
+  color: var(--ink);
+  font-size: 0.82rem;
+  min-width: 650px;
+  width: 100%;
+}
+.csv-preview-table th,
+.csv-preview-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 0.6rem 0.7rem;
+  text-align: left;
+  white-space: nowrap;
+}
+.csv-preview-table th {
+  background: #e7efec;
+  color: var(--ink);
+  font-size: 0.74rem;
+  letter-spacing: 0.03em;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+.csv-preview-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.csv-preview-table tbody tr:nth-child(even) {
+  background: rgba(242, 247, 243, 0.65);
+}
+.csv-preview-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+.btn-preview-cancel {
+  background: transparent;
+  color: var(--teal);
+}
+
 @media (max-width: 620px) {
   .actions,
   .search-input {
@@ -1996,6 +2198,12 @@ function resetData() {
   }
   .seat-map {
     aspect-ratio: 1.35;
+  }
+  .csv-preview-actions {
+    flex-direction: column-reverse;
+  }
+  .csv-preview-actions button {
+    width: 100%;
   }
 }
 </style>
